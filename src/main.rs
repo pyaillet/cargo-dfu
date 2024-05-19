@@ -1,8 +1,7 @@
 mod utils;
 
-use crate::utils::{elf_to_bin, flash_bin, vendor_map};
+use crate::utils::{elf_to_bin, find_device, flash_bin, vendor_map};
 use colored::Colorize;
-use rusb::{open_device_with_vid_pid, GlobalContext};
 
 use clap::Parser;
 use std::path::PathBuf;
@@ -83,52 +82,13 @@ fn main() {
         exit_with_process_status(status)
     }
 
-    let Some(d) = (if let (Some(v), Some(p)) = (opt.vid, opt.pid) {
-        open_device_with_vid_pid(v, p)
-    } else if let Some(c) = opt.chip {
-        println!("    {} for a connected {}.", "Searching".green().bold(), c);
-
-        let mut device: Option<rusb::DeviceHandle<GlobalContext>> = None;
-
-        let vendor = vendor_map();
-
-        if let Some(products) = vendor.get(&c) {
-            for (v, p) in products {
-                if let Some(d) = open_device_with_vid_pid(*v, *p) {
-                    device = Some(d);
-                    break;
-                }
-            }
-        }
-
-        device
-    } else {
-        println!(
-            "    {} for a connected device with known vid/pid pair.",
-            "Searching".green().bold(),
-        );
-
-        let devices: Vec<_> = rusb::devices()
-            .expect("Error with Libusb")
-            .iter()
-            .map(|d| d.device_descriptor().unwrap())
-            .collect();
-
-        let mut device: Option<rusb::DeviceHandle<GlobalContext>> = None;
-
-        for d in devices {
-            for vendor in vendor_map() {
-                if vendor.1.contains(&(d.vendor_id(), d.product_id())) {
-                    if let Some(d) = open_device_with_vid_pid(d.vendor_id(), d.product_id()) {
-                        device = Some(d);
-                        break;
-                    }
-                }
-            }
-        }
-
-        device
-    }) else {
+    println!(
+        "    {} for {}s, place your device in bootloader mode ({}ms between tries).",
+        "Looping".green().bold(),
+        (opt.retries as u64 * opt.delay)/1000,
+        opt.delay
+    );
+    let Some(d) = find_device(&opt) else {
         println!(
             "    {} finding connected devices, have you placed it into bootloader mode?",
             "Error".red().bold()
@@ -225,4 +185,8 @@ struct Opt {
     chip: Option<String>,
     #[clap(name = "list-chips", long = "list-chips")]
     list_chips: bool,
+    #[clap(name = "delay", long = "delay", default_value_t = 500)]
+    delay: u64,
+    #[clap(name = "retries", long = "retries", default_value_t = 60)]
+    retries: usize,
 }

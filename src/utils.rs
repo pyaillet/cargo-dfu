@@ -1,8 +1,12 @@
+use colored::Colorize;
 use goblin::elf::program_header::PT_LOAD;
-use rusb::GlobalContext;
+use retry::{delay::Fixed, retry};
+use rusb::{open_device_with_vid_pid, GlobalContext};
 
 use std::path::PathBuf;
 use std::{fs::File, io::Read};
+
+use crate::Opt;
 
 #[derive(Debug)]
 pub enum UtilError {
@@ -76,4 +80,60 @@ pub fn vendor_map() -> std::collections::HashMap<String, Vec<(u16, u16)>> {
         "stm32".to_string() => vec![(0x0483, 0xdf11)],
         "gd32vf103".to_string() =>  vec![(0x28e9, 0x0189)],
     }
+}
+
+pub fn find_device(opt: &Opt) -> Option<rusb::DeviceHandle<GlobalContext>> {
+    let retries = opt.retries;
+    let delay = opt.delay;
+
+    let result = retry(Fixed::from_millis(delay as u64).take(retries), || {
+        let default_error = Err("no device found");
+        if let (Some(v), Some(p)) = (opt.vid, opt.pid) {
+            open_device_with_vid_pid(v, p).ok_or("no device found")
+        } else if let Some(c) = &opt.chip {
+            println!("    {} for a connected {}.", "Searching".green().bold(), c);
+
+            let mut device: Result<rusb::DeviceHandle<GlobalContext>, &'static str> = default_error;
+
+            let vendor = vendor_map();
+
+            if let Some(products) = vendor.get(c) {
+                for (v, p) in products {
+                    if let Some(d) = open_device_with_vid_pid(*v, *p) {
+                        device = Ok(d);
+                        break;
+                    }
+                }
+            }
+
+            device
+        } else {
+            println!(
+                "    {} for a connected device with known vid/pid pair.",
+                "Searching".green().bold(),
+            );
+
+            let devices: Vec<_> = rusb::devices()
+                .expect("Error with Libusb")
+                .iter()
+                .map(|d| d.device_descriptor().unwrap())
+                .collect();
+
+            let mut device: Result<rusb::DeviceHandle<GlobalContext>, &'static str> = default_error;
+
+            for d in devices {
+                for vendor in vendor_map() {
+                    if vendor.1.contains(&(d.vendor_id(), d.product_id())) {
+                        if let Some(d) = open_device_with_vid_pid(d.vendor_id(), d.product_id()) {
+                            device = Ok(d);
+                            break;
+                        }
+                    }
+                }
+            }
+
+            device
+        }
+    });
+    result.ok()
 }
